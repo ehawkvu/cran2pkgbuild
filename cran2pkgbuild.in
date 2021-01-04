@@ -1,0 +1,325 @@
+#!/usr/bin/env sh
+
+#cran2pkgbuild with create a folder with the name 'r-<pkgname>' with <pkgname> being
+#whatever your input was to the script. It will only create that package at the end of
+#the program, so while it is running, the folder won't exist
+#The script goes to cran.r-project.org and curls the html for the page, then from that html it
+#looks for all of the information that can be used in an arch linux pkgbuild; the license,
+#the description, dependencies and optional dependencies, etc
+#
+#DEPENDS:grep,sed,tr,cat,awk,posix sh
+#
+#TODO:
+#	- get rid of awk as a dependency
+# - refactor the code to make use of shell functions instead of variables.
+VERSION="0.0.1"
+
+#also change the default download link, change it to be the archive link
+print_usage(){
+cat <<EOF
+Usage: cran2pkgbuild [-d] [-p package] [-bf=blacklist_file] ...
+
+Flags:
+  -p/--package      -  Package to create a PKGBUILD for
+  -bf=              -  /path/to/blacklist/file
+  -d/--debug        -  Enable Debugging
+  -b=/--blacklist=  -  List of packages to ignore separated by commas
+  -h/--help         -  Print this message
+  -v/--version      -  Print the version
+
+Examples:
+  Short Form:
+    cran2pkgbuild -p tidyverse -bf=/tmp/blacklisted_imports
+
+  Long Form:
+    cran2pkgbuild --package rmarkdown --blacklist=lintr,tidyverse,tinytex
+EOF
+}
+
+print_version(){
+	cat <<EOF
+cran2pkgbuild version: $VERSION
+EOF
+}
+
+DEBUG=0
+CHILD=0
+blacklist=""
+blacklist_file=$(mktemp)
+global_blacklist_file="" # shouldn't be needed, just supply it with -bf?
+# argument parser
+for arg in $@
+do
+	case $arg in
+		-p|--package)
+			pkg_name="$2"
+			shift
+			;;
+		-b=*|--blacklist=*)
+			blacklist=$(echo ${arg#*=} | tr ',' ' ')
+			shift
+			;;
+		-bf=*|--blacklist_file=*)
+			blacklist_file=${arg#*=}
+			[ -f $blacklist_file ] || exit 1
+			shift
+			;;
+		-gbf=*|--global_blacklist_file=*)
+			global_blacklist_file=${arg#*=}
+			[ -f $global_blacklist_file ] || exit 1
+			shift
+			;;
+		--as-child)
+			CHILD=1
+			shift
+			;;
+		-d|--debug)
+			DEBUG=1
+			shift
+			;;
+		-h|--help)
+			print_usage && exit 0
+			shift
+			;;
+		-v|--version)
+			print_version && exit 0
+			shift
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+[ -z $pkg_name ] && exit 1
+#INPUTS
+pkgname="r-$(echo "$pkg_name" | tr '[:upper:]' '[:lower:]')"
+#pkgname="r-${pkg_name,,}" #potential alternative?
+
+#FILES
+PKGHTML=$(mktemp)
+
+#FIXME: make a for loop
+getLicense() {
+#	licenses="GPL3 GPL2 BSD MIT"
+#	for l in $licenses
+#	do
+#		echo $1 | grep -iq "$l"
+#	done
+	if echo $1 | grep -iq 'GPL3'
+	then
+		pkglicense='GPL3'
+	elif echo $1 | grep -iq 'GPL2'
+	then
+		pkglicense='GPL2'
+	elif echo $1 | grep -iq 'BSD'
+	then
+		pkglicense='BSD'
+	elif echo $1 | grep -iq 'MIT'
+	then
+		pkglicense='MIT'
+	else
+		pkglicense='custom'
+	fi
+	echo $pkglicense
+}
+
+getPkgHTML() {
+	pkg_name=$1
+	PKGHTML=$2
+	curl -s "https://cran.r-project.org/web/packages/$pkg_name/index.html" > $PKGHTML
+}
+
+getPkgHTML $pkg_name $PKGHTML
+
+tpkgver=$(cat $PKGHTML \
+	| sed -n '/<td>Version:<\/td>/,/<\/tr>/p' \
+	| sed -e 's/t.//g' \
+	-e 's/<.>//g' \
+	-e 's/.*Version://g' \
+	| grep '<' \
+	| sed 's/<>//g'
+)
+
+tpkgdesc=$(cat $PKGHTML \
+	| grep '<h2>' \
+	| tr -d '<>' \
+	| cut -d':' -f2 \
+	| sed -e 's/^ //' \
+	-e 's|/h2||'
+) #might want this to be the paragraph tag after h2 if there is one?
+
+
+tpkgdepends=$(cat $PKGHTML \
+	| sed -n "/<td>Depends:<\/td>/,/<\/tr>/p" \
+	| sed -e "/<td>Depends:<\/td>/d" \
+	-e "s/,/\n/g" \
+	-e "/^<\/tr>/d" \
+	-e "s|<[^>]*>||g" \
+	-e "s|[()]||g" \
+	-e "s| &ge; |>=|g" \
+	| tr -d ' ' \
+	| sed -e "s/^/'/g" \
+	-e "s/$/'/g" \
+	| grep ">" \
+	| tr "\n" ' ' \
+)
+# Steps:
+# get only the section of the document that we need
+# get rid of the first line (nothing special)
+# replace commas with newlines
+# delete any lines that start with </tr>
+# delete all tags
+# delete any parenthesis
+# replace &ge; with >=
+# delete any spaces
+# add a "'" to the beginning of each line
+# add a "'" to the end of each line
+# only get lines that have a '>'
+# repalce all newlines with a space
+fpkgdepends=$(for d in $tpkgdepends
+do
+	# this loop goes through every depend in tpkgdepends, and checks if it is 'R' or 'r', and if it isn't,
+	# then it prefixes 'r-' to the dependency so that it complies with Arch's guidelines
+	echo $d | grep -iE "'r['|>]" > /dev/null && echo $d || echo $d | sed -E "s/'([.>=a-zA-Z0-9])/'r-\1/g"
+done)
+# parse the system requirements, this variable is far from perfect, but will work for most simple R packages
+pkgsysreq=$(cat $PKGHTML \
+	| sed -n "/<td>SystemRequirements:<\/td>/,/<\/tr>/p" \
+	| grep td \
+	| sed 's/td//g' \
+	| tr -d '<>()' \
+	| sed -e '/SystemRequirements:/d' \
+	-e 's/ //g' \
+	-e 's/&gt;/>/' \
+	| cut -d'-' -f1 \
+	| sed -e "s/^/'/" -e "s/$/'/"
+)
+# parse the optional dependencies
+tpkgoptdepends=$(cat $PKGHTML \
+	| sed -n '/<td>Suggests:<\/td>/,/<\/tr>/p' \
+	| tr -d '\n' \
+	| sed -e "s/,/\n/g" \
+	-e "s/<a/\n<a/g" \
+	| grep "href=\"../" \
+	| sed -e "s/<[^>]*>//g" \
+	-e "s/[()]//g" \
+	-e "s|[ ]*&ge;[ ]*|>=|g" \
+	-e "s/^/'/g" \
+	-e "s/$/'/g" \
+	| tr '\n' ' '
+)
+# parse the html for the imports
+tpkgimports=$(cat $PKGHTML \
+	| sed -n "/<td>Imports:<\/td>/,/<\/tr>/p" \
+	| tr -d '\n' \
+	| sed -e "s/,/\n/g" \
+	-e "s/<a/\n<a/g" \
+	| grep "href=\"../" \
+	| sed -e "s/<[^>]*>//g" \
+	-e "s/[()]//g" \
+	-e "s|[ ]*&ge;[ ]*|>=|g" \
+	-e "s/^/'/g" \
+	-e "s/$/'/g" \
+	| tr '\n' ' '
+)
+# format the package's imports (using sed)
+fpkgimports=$(echo $tpkgimports \
+	| sed -E "s/'([.>=a-zA-Z0-9])/'r-\1/g"
+)
+#need to implement some checks here to make sure everything is formatted the correct way
+ttotalpkgdepends="$tpkgsysreq $fpkgimports $fpkgdepends"
+	pkg_html=$(curl -s "https://cran.r-project.org/web/packages/$pkg_name/index.html")
+	#FIXME: remove awk?
+	pkg_license=$(echo $pkg_html \
+		| sed "s/License/\nLicense/" \
+		| grep License \
+		| awk -F 'td' '{print $3}' \
+		| sed 's|[<][^>]*[>]||g' \
+		| sed -e 's/<//g' \
+		-e 's/>//g' \
+		-e 's|/||g' \
+		-e 's/-//g' \
+		-e 's/&ge;/>=/g' \
+		-e 's/_//g'
+	)
+	pkg_tar=${pkg_name}_${tpkgver}.tar.gz
+	pkg_url="https://cran.r-rproject.org/package=${pkg_name}"
+	pkg_source="https://cran.r-project.org/src/contrib/${pkg_tar}"
+	pkg_md5sum="SKIP"
+	pkglicense=$(getLicense $pkg_license)
+
+if echo $ttotalpkgdepends | grep -iqE "'r['|>]"
+then
+	#echo "R was found"
+	echo 1> /dev/null
+else
+	ttotalpkgdepends="'r' $ttotalpkgdepends"
+fi
+
+#fixup final values that get put into the pkgbuild
+ftotalpkgdepends=$(echo $ttotalpkgdepends | tr '[:upper:]' '[:lower:]')
+fpkgoptdepends=$(echo $tpkgoptdepends | tr '[:upper:]' '[:lower:]' | sed -E "s/'([a-z0-9])/'r-\1/g")
+
+mkdir -p "${pkgname}"
+#cd $pkgname
+cat << EOF > $pkgname/PKGBUILD
+# PKGBUILD generated by cran2pkgbuild
+_cranname=$pkg_name
+_cranver=${tpkgver}
+_pkgtar=${pkg_name}_${tpkgver}.tar.gz
+pkgname=r-\${_cranname,,}
+pkgver=\${_cranver//[:-]/.}
+pkgrel=00
+pkgdesc="${tpkgdesc}"
+arch=('x86_64')
+url="${pkg_url}"
+depends=($ftotalpkgdepends)
+optdepends=($fpkgoptdepends)
+license=('$pkglicense')
+
+source=("https://cran.r-project.org/src/contrib/\${_pkgtar}")
+md5sums=('$pkg_md5sum')
+
+build(){
+	R CMD INSTALL \${_pkgtar} -l \$srcdir
+}
+
+package(){
+	install -d "\$pkgdir/usr/lib/R/library"
+	cp -r "\$srcdir/\$_cranname" "\$pkgdir/usr/lib/R/library"
+}
+EOF
+# remove the HTML file that was downloaded
+rm $PKGHTML
+
+this_pkg_imports=$(echo $tpkgimports | sed "s|>=[0-9.]*||g" | tr -d "'")
+imports_to_download=""
+
+# if there are no packages in the blacklist, don't change anything
+if [ -e "$blacklist" ]
+then
+	imports_to_download="$this_pkg_imports"
+else
+	#for every import from 'this_pkg_imports'
+	for i in $this_pkg_imports
+	do
+		# if the item is not in the blacklist, add it to the imports to download
+		! grep $i $blacklist_file 1> /dev/null && imports_to_download="$imports_to_download $i"
+	done
+fi
+
+# add this_pkg_imports to blacklist_file
+echo $this_pkg_imports | tr ' ' '\n' >> $blacklist_file
+
+for i in $imports_to_download
+do
+	cran2pkgbuild-ng -p $i --blacklist_file=$blacklist_file --as-child
+done
+
+# potential main function; not completed
+main() {
+	[ -z $pkg_name ] && exit 1
+	pkgname="r-$(echo "$pkg_name" | tr '[:upper:]' '[:lower:]')"
+	getPkgHTML $pkg_name $PKGHTML || exit 1
+}
