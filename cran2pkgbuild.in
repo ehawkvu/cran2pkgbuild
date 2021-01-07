@@ -314,7 +314,7 @@ echo "$this_pkg_imports" | tr ' ' '\n' >> "$blacklist_file"
 
 for i in $imports_to_download
 do
-	cran2pkgbuild-ng -p "$i" --blacklist_file="$blacklist_file" --as-child
+	cran2pkgbuild -p "$i" --blacklist_file="$blacklist_file" --as-child
 done
 
 # potential main function; not completed
