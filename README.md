@@ -30,3 +30,37 @@ you should not *rely* on cran2pkgbuild to get everything correct. You
 Also, Arch Linux's default R package bundles some external libraries
 so you will need to write your own R PKGBUILD that 'provides' all of the
 bundled libraries.
+
+Here is a list of the libraries included in the default Arch R package:
+```
+r-KernSmooth
+r-MASS
+r-Matrix
+r-base
+r-boot
+r-class
+r-cluster
+r-codetools
+r-compiler
+r-datasets
+r-foreign
+r-grDevices
+r-graphics
+r-grid
+r-lattice
+r-methods
+r-mgcv
+r-nlme
+r-nnet
+r-parallel
+r-rpart
+r-spatial
+r-splines
+r-stats
+r-stats4
+r-survival
+r-tcltk
+r-tools
+r-translations
+r-utils
+```
