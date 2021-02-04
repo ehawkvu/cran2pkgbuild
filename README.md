@@ -33,9 +33,9 @@ bundled libraries.
 
 Here is a list of the libraries included in the default Arch R package:
 ```
-r-KernSmooth
-r-MASS
-r-Matrix
+r-kernsmooth
+r-mass
+r-matrix
 r-base
 r-boot
 r-class
@@ -44,7 +44,7 @@ r-codetools
 r-compiler
 r-datasets
 r-foreign
-r-grDevices
+r-grdevices
 r-graphics
 r-grid
 r-lattice
