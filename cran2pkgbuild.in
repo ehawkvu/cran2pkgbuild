@@ -59,12 +59,12 @@ do
 			blacklist=$(echo "${arg#*=}" | tr ',' ' ')
 			shift
 			;;
-		-bf=*|--blacklist_file=*)
+		-bf=*|--blacklist-file=*)
 			blacklist_file="${arg#*=}"
 			[ -f "$blacklist_file" ] || exit 1
 			shift
 			;;
-		-gbf=*|--global_blacklist_file=*)
+		-gbf=*|--global-blacklist-file=*)
 			global_blacklist_file="${arg#*=}"
 			[ -f "$global_blacklist_file" ] || exit 1
 			shift
